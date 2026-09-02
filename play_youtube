@@ -1,0 +1,10 @@
+import pywhatkit
+
+def play_youtube(query: str) -> str:
+    """Uses pywhatkit to automatically find and play the direct YouTube video link."""
+    try:
+        # pywhatkit automatically fetches the direct video URL and launches the browser
+        pywhatkit.playonyt(query)
+        return f"Playing '{query}' on YouTube, sir."
+    except Exception as e:
+        return f"Failed to play YouTube video: {e}"
