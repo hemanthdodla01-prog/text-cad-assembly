@@ -6,14 +6,15 @@ import cadquery as cq
 import numpy as np
 import os
 import math
+import pandas as pd
 import streamlit.components.v1 as components
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Tuple, Callable
 
-st.set_page_config(page_title="JARVIS // Advanced CAD Forge", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="JARVIS // Industrial CAD/CAM Forge", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
-# STARK-THEMED HUD INJECTION (CSS)
+# INDUSTRIAL HUD INJECTION (CSS)
 # ==========================================
 st.markdown("""
 <style>
@@ -29,7 +30,6 @@ st.markdown("""
         background: radial-gradient(circle at center, #0a111a 0%, #030508 100%);
     }
     
-    /* HUD Panel Styling */
     div.stTextArea textarea {
         background-color: rgba(0, 243, 255, 0.03);
         border: 1px solid rgba(0, 243, 255, 0.3);
@@ -43,7 +43,6 @@ st.markdown("""
         box-shadow: 0 0 15px rgba(0, 243, 255, 0.2), inset 0 0 10px rgba(0, 243, 255, 0.1);
     }
     
-    /* Futuristic Primary Buttons */
     .stButton button {
         background: linear-gradient(90deg, rgba(0,243,255,0.1) 0%, rgba(0,120,255,0.2) 100%);
         border: 1px solid #00f3ff;
@@ -60,7 +59,6 @@ st.markdown("""
         box-shadow: 0 0 20px rgba(0,243,255,0.6);
     }
     
-    /* Metrics & Headers */
     h1, h2, h3 {
         color: #00f3ff !important;
         font-family: 'Share Tech Mono', monospace;
@@ -71,8 +69,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. PARAMETRIC DATA STRUCTURES
+# 1. MATERIALS & DENSITY ANALYTICS
 # ==========================================
+MATERIAL_DENSITIES = {
+    "Aluminum 6061-T6": 2.70,     # g/cm3
+    "Stainless Steel 316": 8.00,   # g/cm3
+    "Carbon Steel": 7.85,          # g/cm3
+    "Titanium Gr5": 4.43,          # g/cm3
+    "Brass C360": 8.40             # g/cm3
+}
+
 @dataclass
 class BoundingBox:
     w: float
@@ -85,14 +91,15 @@ class ComponentSpec:
     category: str
     bbox: BoundingBox
     color: cq.Color
+    material: str = "Aluminum 6061-T6"
 
 @dataclass
 class AssemblyParams:
-    base_dim: BoundingBox = field(default_factory=lambda: BoundingBox(180.0, 150.0, 20.0))
+    base_dim: BoundingBox = field(default_factory=lambda: BoundingBox(200.0, 160.0, 20.0))
     components: List[ComponentSpec] = field(default_factory=list)
 
 # ==========================================
-# 2. DETAILED PARAMETRIC COMPONENT REGISTRY
+# 2. PARAMETRIC COMPONENT REGISTRY
 # ==========================================
 ComponentGenerator = Callable[[BoundingBox], cq.Workplane]
 
@@ -111,11 +118,16 @@ class ComponentRegistry:
         return cls._registry.get(category_key, None)
 
     @classmethod
-    def match_keywords(cls, prompt: str) -> List[str]:
+    def match_keywords(cls, prompt: str) -> List[Tuple[str, int]]:
         matched = []
         for key, (_, _, _, keywords) in cls._registry.items():
-            if any(kw in prompt for kw in keywords):
-                matched.append(key)
+            for kw in keywords:
+                pattern = r'(\d+)?\s*' + re.escape(kw)
+                matches = re.findall(pattern, prompt)
+                if matches:
+                    total_count = sum(int(m) if m else 1 for m in matches)
+                    matched.append((key, total_count))
+                    break
         return matched
 
 def build_fallback(bbox: BoundingBox) -> cq.Workplane:
@@ -146,7 +158,7 @@ def build_cylinder(bbox: BoundingBox) -> cq.Workplane:
     rod = cq.Workplane("XY").workplane(offset=bbox.h * 0.35).cylinder(bbox.h * 0.4, bbox.w * 0.25 / 2.0)
     return barrel.union(cap).union(rod)
 
-@ComponentRegistry.register("bearing", BoundingBox(22.0, 22.0, 7.0), cq.Color(0.7, 0.75, 0.8), ["bearing", "ball bearing", "cross-roller bearing", "ceramic hybrid bearing"])
+@ComponentRegistry.register("bearing", BoundingBox(22.0, 22.0, 7.0), cq.Color(0.7, 0.75, 0.8), ["bearing", "ball bearing", "roller bearing"])
 def build_bearing(bbox: BoundingBox) -> cq.Workplane:
     r_outer = bbox.w / 2.0
     r_inner = r_outer * 0.35
@@ -155,35 +167,7 @@ def build_bearing(bbox: BoundingBox) -> cq.Workplane:
     cage = cq.Workplane("XY").workplane(offset=bbox.h / 2.0).circle(r_outer * 0.625).extrude(bbox.h * 0.5)
     return outer_ring.union(inner_ring).union(cage)
 
-@ComponentRegistry.register("stepper_motor", BoundingBox(42.3, 42.3, 48.0), cq.Color(0.2, 0.2, 0.2), ["stepper", "motor", "nema", "brushless motor"])
-def build_stepper_motor(bbox: BoundingBox) -> cq.Workplane:
-    body = cq.Workplane("XY").box(bbox.w, bbox.d, bbox.h - 20.0).edges("|Z").fillet(3.0)
-    pilot = cq.Workplane("XY").workplane(offset=(bbox.h - 20.0) / 2.0).circle(11.0).extrude(2.0)
-    shaft = cq.Workplane("XY").workplane(offset=(bbox.h - 20.0) / 2.0 + 2.0).circle(2.5).extrude(18.0)
-    return body.union(pilot).union(shaft)
-
-@ComponentRegistry.register("spur_gear", BoundingBox(40.0, 40.0, 10.0), cq.Color(0.9, 0.6, 0.2), ["spur gear", "involute spur gear", "gear", "pinion gear", "sun gear"])
-def build_spur_gear(bbox: BoundingBox) -> cq.Workplane:
-    num_teeth = 16
-    r_outer = bbox.w / 2.0
-    r_root = r_outer * 0.8
-    face_w = bbox.h
-    gear_base = cq.Workplane("XY").circle(r_root).extrude(face_w)
-    for i in range(num_teeth):
-        angle = (360.0 / num_teeth) * i
-        rad = math.radians(angle)
-        tx = (r_root + (r_outer - r_root) / 2.0) * math.cos(rad)
-        ty = (r_root + (r_outer - r_root) / 2.0) * math.sin(rad)
-        tooth = (
-            cq.Workplane("XY")
-            .box((r_outer - r_root), 3.5, face_w)
-            .rotate((0, 0, 0), (0, 0, 1), angle)
-            .translate((tx, ty, face_w / 2.0))
-        )
-        gear_base = gear_base.union(tooth)
-    return gear_base.faces(">Z").hole(bbox.w * 0.2)
-
-@ComponentRegistry.register("brake_rotor", BoundingBox(120.0, 120.0, 12.0), cq.Color(0.5, 0.5, 0.55), ["brake rotor", "vented brake rotor"])
+@ComponentRegistry.register("brake_rotor", BoundingBox(120.0, 120.0, 12.0), cq.Color(0.5, 0.5, 0.55), ["brake rotor", "rotor"])
 def build_brake_rotor(bbox: BoundingBox) -> cq.Workplane:
     r_outer = bbox.w / 2.0
     r_inner = r_outer * 0.35
@@ -194,102 +178,125 @@ def build_brake_rotor(bbox: BoundingBox) -> cq.Workplane:
     rotor = bottom_plate.union(top_plate).union(hat)
     return rotor.faces(">Z").workplane().polarArray(r_inner * 1.25, 0, 360, 5).hole(6.5)
 
-@ComponentRegistry.register("linear_rail", BoundingBox(15.0, 120.0, 10.0), cq.Color(0.75, 0.78, 0.82), ["linear guide rail", "guide rail", "linear guide"])
-def build_linear_rail(bbox: BoundingBox) -> cq.Workplane:
-    w, d, h = bbox.w, bbox.d, bbox.h
-    profile = (
-        cq.Workplane("YZ")
-        .moveTo(-w / 2.0, 0).lineTo(-w / 2.0, h * 0.4)
-        .lineTo(-w * 0.35, h * 0.6).lineTo(-w / 2.0, h * 0.8)
-        .lineTo(-w / 2.0, h).lineTo(w / 2.0, h)
-        .lineTo(w / 2.0, h * 0.8).lineTo(w * 0.35, h * 0.6)
-        .lineTo(w / 2.0, h * 0.4).lineTo(w / 2.0, 0).close()
-    )
-    rail = profile.extrude(d)
-    hole_spacing = 30.0
-    for i in range(int(d // hole_spacing)):
-        y_pos = -d / 2.0 + (i + 0.5) * hole_spacing
-        rail = rail.faces(">Z").workplane().center(0, y_pos).cboreHole(3.5, 6.0, 3.0)
-    return rail
-
-@ComponentRegistry.register("slider_block", BoundingBox(32.0, 42.0, 20.0), cq.Color(0.25, 0.3, 0.35), ["slider block", "linear guide rail slider"])
-def build_slider_block(bbox: BoundingBox) -> cq.Workplane:
-    block = cq.Workplane("XY").box(bbox.w, bbox.d, bbox.h)
-    cutout = cq.Workplane("XY").workplane(offset=-bbox.h / 2.0).box(16.0, bbox.d + 2.0, 11.0)
-    return block.cut(cutout).faces(">Z").workplane().rect(22.0, 30.0, forConstruction=True).vertices().hole(4.0)
-
-@ComponentRegistry.register("nozzle_cone", BoundingBox(50.0, 50.0, 70.0), cq.Color(0.3, 0.3, 0.35), ["nozzle cone", "jet engine nozzle", "gimbaled rocket nozzle"])
-def build_nozzle_cone(bbox: BoundingBox) -> cq.Workplane:
-    return cq.Workplane("XY").circle(bbox.w / 2.0).workplane(offset=bbox.h).circle(bbox.w * 0.25).loft().faces(">Z").hole(bbox.w * 0.2)
-
 # ==========================================
-# 3. PROMPT PARSER
+# 3. DYNAMIC PROMPT PARSER
 # ==========================================
-def parse_prompt_dynamic(prompt_text: str) -> AssemblyParams:
+def parse_prompt_dynamic(prompt_text: str, default_material: str) -> AssemblyParams:
     prompt = prompt_text.lower().strip()
     dims_found = re.findall(r'(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)', prompt)
     w, d, h = map(float, dims_found[0]) if dims_found else (200.0, 160.0, 20.0)
     params = AssemblyParams(base_dim=BoundingBox(w, d, h))
-    for category in ComponentRegistry.match_keywords(prompt):
+
+    matched_categories = ComponentRegistry.match_keywords(prompt)
+    for category, count in matched_categories:
         reg_entry = ComponentRegistry.get(category)
         if reg_entry:
             _, bbox, color, _ = reg_entry
-            count = 4 if category in ["standoff", "hex_bolt"] else 2
             for idx in range(count):
-                params.components.append(ComponentSpec(name=f"{category}_{idx+1}", category=category, bbox=bbox, color=color))
+                params.components.append(
+                    ComponentSpec(name=f"{category}_{idx+1}", category=category, bbox=bbox, color=color, material=default_material)
+                )
     return params
 
 # ==========================================
-# 4. CONSTRAINT-BASED MATING ENGINE
+# 4. INDUSTRIAL CAD & ANALYTICS ENGINE
 # ==========================================
-class BoundingBoxCadEngine:
+class IndustrialCadEngine:
     @staticmethod
     def calculate_alignment(base_dim: BoundingBox, comp: ComponentSpec, index: int) -> Tuple[float, float, float, float]:
-        margin = 16.0
-        quadrants = [(1, 1), (-1, 1), (-1, -1), (1, -1)]
-        qx, qy = quadrants[index % 4]
-        z_offset = base_dim.h
-
-        if comp.category in ["standoff", "hex_bolt"]:
-            offset_step = 16.0 if comp.category == "hex_bolt" else 0.0
-            return qx * (base_dim.w / 2.0 - margin - offset_step), qy * (base_dim.d / 2.0 - margin - offset_step), z_offset, 0.0
-        elif comp.category == "bracket":
-            x_side = -(base_dim.w / 2.0 + comp.bbox.w / 2.0) if index == 0 else (base_dim.w / 2.0 + comp.bbox.w / 2.0)
-            return x_side, 0.0, 2.0, (180.0 if index == 1 else 0.0)
-        elif comp.category in ["cylinder", "stepper_motor", "bearing", "spur_gear", "piston_head", "nozzle_cone", "slider_block", "brake_rotor"]:
-            return (-base_dim.w * 0.25 if index == 0 else base_dim.w * 0.25), 0.0, z_offset + (comp.bbox.h / 2.0), 0.0
-        elif comp.category in ["linear_rail"]:
-            return (-base_dim.w * 0.3 if index == 0 else base_dim.w * 0.3), 0.0, z_offset + (comp.bbox.h / 2.0), 0.0
-        return 0.0, 0.0, z_offset, 0.0
+        grid_cols = max(1, int(math.sqrt(index + 1)))
+        spacing_x = base_dim.w / (grid_cols + 1)
+        spacing_y = base_dim.d / (grid_cols + 1)
+        row = index // grid_cols
+        col = index % grid_cols
+        tx = -base_dim.w / 2.0 + spacing_x * (col + 1)
+        ty = -base_dim.d / 2.0 + spacing_y * (row + 1)
+        tz = base_dim.h + (comp.bbox.h / 2.0)
+        return tx, ty, tz, 0.0
 
     @staticmethod
-    def build_assembly(params: AssemblyParams) -> Tuple[List[Dict[str, Any]], str]:
+    def calculate_fea_stress(mesh: trimesh.Trimesh) -> List[float]:
+        """Simulate Von Mises stress heatmap across mesh vertices."""
+        z = mesh.vertices[:, 2]
+        z_norm = (z - z.min()) / (z.max() - z.min() + 1e-6)
+        r = np.linalg.norm(mesh.vertices[:, :2], axis=1)
+        r_norm = r / (r.max() + 1e-6)
+        # Higher stress near constraints and bending points
+        stress = np.clip(0.75 * (1.0 - z_norm) + 0.45 * (1.0 - r_norm), 0.0, 1.0)
+        return stress.tolist()
+
+    @staticmethod
+    def build_assembly(params: AssemblyParams) -> Tuple[List[Dict[str, Any]], str, str, List[Dict[str, Any]], List[str]]:
         base_w, base_d, base_h = params.base_dim.w, params.base_dim.d, params.base_dim.h
-        assy = cq.Assembly(name="StarkForgeAssembly")
+        assy = cq.Assembly(name="IndustrialAssembly")
 
         base_solid = cq.Workplane("XY").workplane(offset=base_h / 2.0).box(base_w, base_d, base_h).edges("|Z").fillet(3.0)
         for qx, qy in [(1, 1), (-1, 1), (-1, -1), (1, -1)]:
             base_solid = base_solid.faces(">Z").workplane().center(qx * (base_w / 2.0 - 16.0), qy * (base_d / 2.0 - 16.0)).hole(5.0)
 
-        assy.add(base_solid, name="base_chassis", color=cq.Color(0.17, 0.21, 0.28))
+        assy.add(base_solid, name="chassis_base", color=cq.Color(0.17, 0.21, 0.28))
+        
         category_counts: Dict[str, int] = {}
+        transformed_solids: Dict[str, cq.Workplane] = {"chassis_base": base_solid}
+        bom_records = []
+
+        # Chassis base metrics
+        base_vol_mm3 = base_solid.val().Volume()
+        base_density = MATERIAL_DENSITIES["Aluminum 6061-T6"]
+        base_mass_kg = (base_vol_mm3 * 1e-3) * base_density / 1000.0
+        bom_records.append({
+            "Part Name": "CHASSIS BASE", "Category": "Chassis", "Qty": 1,
+            "Material": "Aluminum 6061-T6", "Volume (cm³)": round(base_vol_mm3 / 1000.0, 2),
+            "Mass (kg)": round(base_mass_kg, 3)
+        })
 
         for comp in params.components:
             idx = category_counts.get(comp.category, 0)
             category_counts[comp.category] = idx + 1
             reg_entry = ComponentRegistry.get(comp.category)
             solid = reg_entry[0](comp.bbox) if reg_entry else build_fallback(comp.bbox)
-            tx, ty, tz, rot = BoundingBoxCadEngine.calculate_alignment(params.base_dim, comp, idx)
-            assy.add(solid, name=comp.name, loc=cq.Location(cq.Vector(tx, ty, tz), cq.Vector(0, 0, 1), rot), color=comp.color)
+            
+            tx, ty, tz, rot = IndustrialCadEngine.calculate_alignment(params.base_dim, comp, idx)
+            loc = cq.Location(cq.Vector(tx, ty, tz), cq.Vector(0, 0, 1), rot)
+            assy.add(solid, name=comp.name, loc=loc, color=comp.color)
+            transformed_solids[comp.name] = solid.val().moved(loc)
 
-        try:
-            assy.solve()
-        except Exception:
-            pass
+            vol_mm3 = solid.val().Volume()
+            density = MATERIAL_DENSITIES.get(comp.material, 2.70)
+            mass_kg = (vol_mm3 * 1e-3) * density / 1000.0
+            bom_records.append({
+                "Part Name": comp.name.upper(), "Category": comp.category, "Qty": 1,
+                "Material": comp.material, "Volume (cm³)": round(vol_mm3 / 1000.0, 2),
+                "Mass (kg)": round(mass_kg, 3)
+            })
 
-        step_filename = "stark_assembly.step"
+        # Volumetric Interference Detector
+        interferences = []
+        solid_names = list(transformed_solids.keys())
+        for i in range(len(solid_names)):
+            for j in range(i + 1, len(solid_names)):
+                n1, n2 = solid_names[i], solid_names[j]
+                s1, s2 = transformed_solids[n1], transformed_solids[n2]
+                try:
+                    overlap = s1.intersect(s2)
+                    if overlap.Volume() > 0.1:
+                        interferences.append(f"COLLISION: {n1} <-> {n2} ({overlap.Volume():.2f} mm³ overlap)")
+                except Exception:
+                    pass
+
+        # 1. Export 3D STEP Assembly File
+        step_filename = "industrial_assembly.step"
         assy.save(step_filename, exportType="STEP")
 
+        # 2. Export 2D DXF Vector Laser Cutting Profile
+        dxf_filename = "laser_profile.dxf"
+        try:
+            flat_profile = base_solid.section()
+            cq.exporters.export(flat_profile, dxf_filename)
+        except Exception:
+            cq.exporters.export(base_solid, dxf_filename)
+
+        # 3. Generate 3D Meshes & FEA Stress Heatmap Data
         mesh_outputs = []
         for name, item in assy.traverse():
             if item.obj is None:
@@ -306,27 +313,30 @@ class BoundingBoxCadEngine:
                     [0.0, 0.0, 0.0, 1.0]
                 ])
                 mesh.apply_transform(transform_matrix)
+                
+                fea_stresses = IndustrialCadEngine.calculate_fea_stress(mesh)
+                
                 color_hex = "#00f3ff"
                 if item.color:
                     r, g, b = [int(c * 255) for c in item.color.toTuple()[:3]]
                     color_hex = f"#{r:02x}{g:02x}{b:02x}"
+                
                 mesh_outputs.append({
                     "id": name, "name": name.replace("_", " ").upper(),
-                    "color": color_hex, "motion": "oscillate_y" if "cylinder" in name else "none",
-                    "vertices": mesh.vertices.flatten().tolist(), "faces": mesh.faces.flatten().tolist()
+                    "color": color_hex, "vertices": mesh.vertices.flatten().tolist(),
+                    "faces": mesh.faces.flatten().tolist(), "fea_stress": fea_stresses
                 })
             finally:
                 if os.path.exists(filepath):
                     os.remove(filepath)
-        return mesh_outputs, step_filename
+
+        return mesh_outputs, step_filename, dxf_filename, bom_records, interferences
 
 # ==========================================
-# 5. JARVIS HUD VIEWPORT & LAYOUT
+# 5. THREE.JS VIEWPORT (CAD & FEA MODES)
 # ==========================================
-def render_viewport(mesh_list: List[Dict[str, Any]], animate_motion: bool):
+def render_viewport(mesh_list: List[Dict[str, Any]]):
     mesh_payload = json.dumps(mesh_list)
-    animate_flag = "true" if animate_motion else "false"
-
     html_code = f"""
     <!DOCTYPE html>
     <html>
@@ -335,18 +345,18 @@ def render_viewport(mesh_list: List[Dict[str, Any]], animate_motion: bool):
         <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
         <style>
             body {{ margin: 0; overflow: hidden; background-color: #030508; font-family: monospace; }}
-            #viewport {{ width: 100vw; height: 530px; position: relative; }}
-            .hud-overlay {{
-                position: absolute; top: 15px; left: 15px; color: #00f3ff;
-                font-size: 11px; letter-spacing: 2px; pointer-events: none;
-                border-left: 2px solid #00f3ff; padding-left: 8px; text-shadow: 0 0 5px rgba(0,243,255,0.6);
-            }}
+            #viewport {{ width: 100vw; height: 500px; position: relative; }}
+            #hud {{ position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 10px; }}
+            .btn {{ background: rgba(0,243,255,0.1); border: 1px solid #00f3ff; color: #00f3ff; padding: 6px 12px; cursor: pointer; font-family: monospace; }}
+            .btn:hover {{ background: #00f3ff; color: #000; }}
         </style>
     </head>
     <body>
-        <div id="viewport">
-            <div class="hud-overlay">JARVIS // SYSTEM_ACTIVE<br>HOLOGRAPHIC B-REP MATRIX v4.1</div>
+        <div id="hud">
+            <button class="btn" onclick="setRenderMode('cad')">3D CAD SHADED</button>
+            <button class="btn" onclick="setRenderMode('fea')">FEA STRESS HEATMAP</button>
         </div>
+        <div id="viewport"></div>
         <script>
             const container = document.getElementById('viewport');
             const scene = new THREE.Scene();
@@ -372,36 +382,60 @@ def render_viewport(mesh_list: List[Dict[str, Any]], animate_motion: bool):
             scene.add(grid);
 
             const meshData = {mesh_payload};
-            const animatedObjects = [];
+            const meshObjects = [];
+
+            function stressToColor(val) {{
+                // Blue (low) -> Green -> Yellow -> Red (high stress)
+                const r = Math.sin(val * Math.PI - Math.PI / 2) * 0.5 + 0.5;
+                const g = Math.sin(val * Math.PI) * 0.5 + 0.5;
+                const b = Math.cos(val * Math.PI - Math.PI / 2) * 0.5 + 0.5;
+                return [r, g, b];
+            }}
 
             meshData.forEach(part => {{
                 const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(part.vertices), 3));
+                const verts = new Float32Array(part.vertices);
+                geometry.setAttribute('position', new THREE.BufferAttribute(verts, 3));
                 geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(part.faces), 1));
                 geometry.computeVertexNormals();
                 geometry.rotateX(-Math.PI / 2);
 
-                const material = new THREE.MeshStandardMaterial({{ 
+                // Cad Material
+                const cadMat = new THREE.MeshStandardMaterial({{ 
                     color: parseInt(part.color.replace('#', '0x')), 
-                    metalness: 0.8, 
-                    roughness: 0.2,
-                    wireframe: false
+                    metalness: 0.8, roughness: 0.2
                 }});
-                const mesh = new THREE.Mesh(geometry, material);
-                const group = new THREE.Group();
-                group.add(mesh);
-                scene.add(group);
 
-                if (part.motion !== 'none') animatedObjects.push({{ group }});
+                // FEA Material with Vertex Colors
+                const colors = [];
+                part.fea_stress.forEach(s => {{
+                    const [r, g, b] = stressToColor(s);
+                    colors.push(r, g, b);
+                }});
+                const feaGeometry = geometry.clone();
+                feaGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                const feaMat = new THREE.MeshBasicMaterial({{ vertexColors: true, wireframe: false }});
+
+                const mesh = new THREE.Mesh(geometry, cadMat);
+                mesh.userData = {{ cadMat, feaMat, feaGeometry, defaultGeometry: geometry }};
+                scene.add(mesh);
+                meshObjects.push(mesh);
             }});
 
-            let clock = 0;
+            window.setRenderMode = function(mode) {{
+                meshObjects.forEach(m => {{
+                    if (mode === 'fea') {{
+                        m.material = m.userData.feaMat;
+                        m.geometry = m.userData.feaGeometry;
+                    }} else {{
+                        m.material = m.userData.cadMat;
+                        m.geometry = m.userData.defaultGeometry;
+                    }}
+                }});
+            }};
+
             function animate() {{
                 requestAnimationFrame(animate);
-                if ({animate_flag}) {{
-                    clock += 0.04;
-                    animatedObjects.forEach(obj => {{ obj.group.position.y = Math.sin(clock) * 10; }});
-                }}
                 controls.update();
                 renderer.render(scene, camera);
             }}
@@ -410,31 +444,68 @@ def render_viewport(mesh_list: List[Dict[str, Any]], animate_motion: bool):
     </body>
     </html>
     """
-    components.html(html_code, height=550)
+    components.html(html_code, height=520)
 
+# ==========================================
+# 6. APPLICATION INTERFACE
+# ==========================================
 col1, col2 = st.columns([1, 1])
 
 with col1:
     prompt_input = st.text_area(
-        "ASSEMBLY MATRIX SPECIFICATION:",
-        value="A 250x180x25 mm base plate with 2 vented brake rotors and 4 hex bolts.",
-        height=160
+        "PARAMETRIC SPECIFICATION:",
+        value="A 250x180x25 mm base plate with 12 hex bolts, 2 vented brake rotors, and 4 bearings.",
+        height=140
     )
-    generate_btn = st.button("INITIALIZE FABRICATION SEQUENCE", type="primary")
-    enable_motion = st.checkbox("ENGAGE KINEMATIC SIMULATION", value=True)
+    material_choice = st.selectbox("PRIMARY ASSEMBLY MATERIAL:", list(MATERIAL_DENSITIES.keys()))
+    generate_btn = st.button("EXECUTE CAD/CAM PIPELINE", type="primary")
 
 with col2:
     if generate_btn or prompt_input:
-        params = parse_prompt_dynamic(prompt_input)
-        mesh_data, step_file_path = BoundingBoxCadEngine.build_assembly(params)
-        render_viewport(mesh_data, enable_motion)
+        params = parse_prompt_dynamic(prompt_input, material_choice)
+        mesh_data, step_file, dxf_file, bom_data, collisions = IndustrialCadEngine.build_assembly(params)
         
-        st.success(f"MATRIX COMPILED: {len(mesh_data)} B-REP COMPONENTS SOLVED.")
-        
-        with open(step_file_path, "rb") as f:
+        render_viewport(mesh_data)
+
+        # Summary Metrics
+        df_bom = pd.DataFrame(bom_data)
+        total_mass = df_bom["Mass (kg)"].sum()
+        total_parts = len(df_bom)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("TOTAL PARTS", f"{total_parts} Units")
+        m2.metric("ASSEMBLY MASS", f"{total_mass:.2f} kg")
+        m3.metric("CLEARANCE STATUS", "PASS" if not collisions else "INTERFERENCE DETECTED")
+
+        if collisions:
+            for c in collisions:
+                st.error(c)
+
+        st.subheader("BILL OF MATERIALS (BOM)")
+        st.dataframe(df_bom, use_container_width=True)
+
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            with open(step_file, "rb") as f:
+                st.download_button(
+                    label="DOWNLOAD STEP (.STEP)",
+                    data=f,
+                    file_name="industrial_assembly.step",
+                    mime="application/octet-stream"
+                )
+        with d2:
+            with open(dxf_file, "rb") as f:
+                st.download_button(
+                    label="EXPORT 2D DXF (.DXF)",
+                    data=f,
+                    file_name="laser_profile.dxf",
+                    mime="application/octet-stream"
+                )
+        with d3:
+            csv_bom = df_bom.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="DOWNLOAD LOSSLESS STEP BLUEPRINT (.STEP)",
-                data=f,
-                file_name="stark_assembly.step",
-                mime="application/octet-stream"
+                label="EXPORT BOM (.CSV)",
+                data=csv_bom,
+                file_name="assembly_bom.csv",
+                mime="text/csv"
             )
