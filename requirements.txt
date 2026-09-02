@@ -1,0 +1,4 @@
+streamlit
+cadquery
+trimesh
+numpy
